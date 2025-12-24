@@ -1,0 +1,11 @@
+metrics: 0.0.0.0:2000
+no-autoupdate: true
+
+ingress:
+  - hostname: ${GITLAB_HOSTNAME}
+    service: http://gitlab:80
+
+  - hostname: ${GITLAB_SSH_HOSTNAME}
+    service: ssh://gitlab:22
+
+  - service: http_status:404

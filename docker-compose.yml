@@ -1,0 +1,145 @@
+services:
+  gitlab:
+    image: gitlab/gitlab-ee:18.7.0-ee.0
+    container_name: gitlab
+    restart: unless-stopped
+    shm_size: "256m"
+    env_file:
+      - ./.env
+    environment:
+      GITLAB_OMNIBUS_CONFIG: |
+        external_url "${GITLAB_EXTERNAL_URL}"
+
+        nginx['listen_port'] = 80
+        nginx['listen_https'] = false
+        nginx['proxy_set_headers'] = {
+          "Host" => "$$http_host",
+          "X-Real-IP" => "$$remote_addr",
+          "X-Forwarded-For" => "$$proxy_add_x_forwarded_for",
+          "X-Forwarded-Proto" => "https",
+          "X-Forwarded-Ssl" => "on"
+        }
+
+        letsencrypt['enable'] = false
+
+        if ENV['AZURE_AD_ENABLED'].to_s.downcase == 'true'
+          args = {
+            "client_id" => ENV['AZURE_AD_CLIENT_ID'],
+            "client_secret" => ENV['AZURE_AD_CLIENT_SECRET'],
+            "tenant_id" => ENV['AZURE_AD_TENANT_ID'],
+            "scope" => ENV['AZURE_AD_SCOPE'],
+            "base_azure_url" => ENV['AZURE_AD_BASE_AZURE_URL']
+          }.compact
+
+          gitlab_rails['omniauth_enabled'] = true
+          gitlab_rails['omniauth_allow_single_sign_on'] = ['azure_activedirectory_v2']
+          gitlab_rails['omniauth_block_auto_created_users'] = true
+          gitlab_rails['omniauth_providers'] = [
+            {
+              "name" => "azure_activedirectory_v2",
+              "label" => ENV['AZURE_AD_LABEL'],
+              "args" => args
+            }
+          ]
+        end
+
+        gitlab_rails['gitlab_shell_ssh_port'] = ${GITLAB_SSH_PORT}
+
+    ports:
+      - "${GITLAB_HTTP_BIND}:${GITLAB_HTTP_PORT}:80"
+      - "${GITLAB_SSH_BIND}:${GITLAB_SSH_PORT}:22"
+    volumes:
+      - ./gitlab/config:/etc/gitlab
+      - ./gitlab/logs:/var/log/gitlab
+      - ./gitlab/data:/var/opt/gitlab
+    networks:
+      - gitlab_net
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.gitlab.rule=Host(`${TRAEFIK_GITLAB_HOSTNAME}`)"
+      - "traefik.http.routers.gitlab.entrypoints=web"
+      - "traefik.http.services.gitlab.loadbalancer.server.port=80"
+
+
+  cloudflared:
+    image: cloudflare/cloudflared:2025.2.1
+    container_name: cloudflared
+    restart: unless-stopped
+    profiles:
+      - cloudflared
+    env_file:
+      - ./.env
+    command: tunnel run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARED_TUNNEL_TOKEN}
+    networks:
+      - gitlab_net
+
+  traefik:
+    image: traefik:v3.4
+    container_name: traefik
+    restart: unless-stopped
+    profiles:
+      - traefik
+    env_file:
+      - ./.env
+    command:
+      - --api.dashboard=true
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+    ports:
+      - "${TRAEFIK_HTTP_BIND}:${TRAEFIK_HTTP_PORT}:80"
+      - "${TRAEFIK_HTTPS_BIND}:${TRAEFIK_HTTPS_PORT}:443"
+      - "${TRAEFIK_DASHBOARD_BIND}:${TRAEFIK_DASHBOARD_PORT}:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik:/data
+    networks:
+      - gitlab_net
+
+  gitlab-runner:
+    image: gitlab/gitlab-runner:alpine-v17.6.1
+    container_name: gitlab-runner
+    restart: unless-stopped
+    depends_on:
+      - gitlab
+    env_file:
+      - ./.env
+    environment:
+      CI_SERVER_URL: ${GITLAB_EXTERNAL_URL}
+      REGISTRATION_TOKEN: ${GITLAB_RUNNER_REGISTRATION_TOKEN}
+      RUNNER_NAME: ${GITLAB_RUNNER_NAME}
+      RUNNER_TAG_LIST: ${GITLAB_RUNNER_TAG_LIST}
+      RUNNER_EXECUTOR: docker
+      DOCKER_IMAGE: ${GITLAB_RUNNER_DEFAULT_IMAGE}
+      DOCKER_PRIVILEGED: ${GITLAB_RUNNER_PRIVILEGED}
+    command: >
+      sh -lc '
+        if [ ! -f /etc/gitlab-runner/config.toml ] || ! grep -q "\[\[runners\]\]" /etc/gitlab-runner/config.toml; then
+          gitlab-runner register --non-interactive \
+            --url "'"$$CI_SERVER_URL"'" \
+            --registration-token "'"$$REGISTRATION_TOKEN"'" \
+            --executor "'"$$RUNNER_EXECUTOR"'" \
+            --docker-image "'"$$DOCKER_IMAGE"'" \
+            --docker-privileged="'"$$DOCKER_PRIVILEGED"'" \
+            --description "'"$$RUNNER_NAME"'" \
+            --tag-list "'"$$RUNNER_TAG_LIST"'" \
+            --locked="false" \
+            --run-untagged="true" \
+            --access-level="not_protected";
+        fi;
+        exec gitlab-runner run --user=gitlab-runner --working-directory=/home/gitlab-runner
+      '
+    volumes:
+      - ./gitlab-runner/config:/etc/gitlab-runner
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - gitlab_net
+
+
+networks:
+  gitlab_net:
+    name: gitlab_net
+    driver: bridge
