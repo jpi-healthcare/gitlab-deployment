@@ -105,6 +105,32 @@ AZURE_AD_BASE_AZURE_URL=
 docker compose up -d
 ```
 
+## SMTP (outbound email)
+
+Set these in `.env` and restart GitLab:
+
+```dotenv
+SMTP_ENABLED=true
+SMTP_ADDRESS=smtp.example.com
+SMTP_PORT=587
+SMTP_USERNAME=...
+SMTP_PASSWORD=...
+SMTP_DOMAIN=example.com
+SMTP_AUTHENTICATION=login
+SMTP_ENABLE_STARTTLS_AUTO=true
+SMTP_TLS=false
+SMTP_OPENSSL_VERIFY_MODE=peer
+
+GITLAB_EMAIL_FROM=gitlab@example.com
+GITLAB_EMAIL_REPLY_TO=gitlab@example.com
+```
+
+Then:
+
+```bash
+docker compose up -d
+```
+
 ## GitLab Runner (instance) auto-registration
 
 This stack starts `gitlab-runner` and registers it automatically on first start if no runner exists in the runner config volume.
